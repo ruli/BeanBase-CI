@@ -47,7 +47,7 @@
  * @package BeanBase
  * @subpackage Model
  */
-class MY_Model {
+class MY_Model extends CI_Model {
 
   public $type = "";
 
