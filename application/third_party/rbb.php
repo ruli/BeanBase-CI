@@ -54,10 +54,18 @@ interface BeanBase_Const {
  */
 interface BeanBase_Const_Relation {
 
-  const RB_HAS_ONE    = 0;
-  const RB_HAS_MANY   = 1;
-  const RB_HAVE_MANY  = 2;
-  const RB_BELONGS_TO = 3;
+  // Relation Codes
+  const RB_HAS_ONE    = "simple_has_one";
+  const RB_HAS_MANY   = "simple_has_many";
+  const RB_HAVE_MANY  = "simple_have_many";
+  const RB_BELONGS_TO = "simple_belongs_to";
+  const RB_HAS_ONE_SELF    = "self_has_one";
+  const RB_HAS_MANY_SELF   = "self_has_many";
+  const RB_HAVE_MANY_SELF  = "self_have_many";
+  const RB_BELONGS_TO_SELF = "self_belongs_to";
+
+  // Self Relation Constants
+  const RB_SELF_REF = "referential";
 
 }
 
@@ -90,7 +98,7 @@ class RBB implements BeanBase_Const_Relation, BeanBase_Const_CRUD, BeanBase_Cons
   //
   // ------------------------------------------------------------------
   /**
-   * Create a new bean with given type, data and an optional filter.
+   * Create a new bean with given type, data
    *
    * @param  string $type   The bean type (table name) to be created
    * @param  array  $data   Data kv-array, default: null
@@ -134,7 +142,7 @@ class RBB implements BeanBase_Const_Relation, BeanBase_Const_CRUD, BeanBase_Cons
   }
 
   /**
-   * Update a bean with given data and an optional filter
+   * Update a bean with optional data
    *
    * This method does not validate the fed in data ($data)
    *
@@ -176,6 +184,10 @@ class RBB implements BeanBase_Const_Relation, BeanBase_Const_CRUD, BeanBase_Cons
       throw new InvalidArgumentException( 'Data array must be associative' );
     }
 
+    if ( !self::is_assoc($filter) ) {
+      throw new InvalidArgumentException( 'Filter array must be associative' );
+    }
+
     foreach ( $filter as $type => $code ) {
       $key = $type."_id";
 
@@ -184,12 +196,12 @@ class RBB implements BeanBase_Const_Relation, BeanBase_Const_CRUD, BeanBase_Cons
           foreach ( $data[$key] as $id ) {
             $rel = self::read( $id, $type );
 
-            self::associate( $bean, $rel, $code );
+            self::associate( $bean, $code, $rel );
           }
         } else {
           $rel = self::read( $data[$key], $type );
 
-          self::associate( $bean, $rel, $code );
+          self::associate( $bean, $code, $rel );
         }
       }
     }
@@ -198,19 +210,23 @@ class RBB implements BeanBase_Const_Relation, BeanBase_Const_CRUD, BeanBase_Cons
   /**
    * Associate bean and rel_bean. This method writes back to DB after association has been established.
    *
+   * @todo   RB_HAVE_MANY_SELF implementation
    * @todo   Fully implement all associations mentioned in http://www.redbeanphp.com/manual/docs/connectingbeans01
    *
    * @param  RedBean_OODBBean  $bean     The bean
-   * @param  RedBean_OODBBean  $rel_bean The rel_bean to be associated
    * @param  const             $code     The constant representing one of the defined relationship codes
+   * @param  RedBean_OODBBean  $rel_bean The rel_bean to be associated
    */
-  public static function associate( RedBean_OODBBean $bean, RedBean_OODBBean $rel_bean, $code) {
+  public static function associate( RedBean_OODBBean $bean, $code, RedBean_OODBBean $rel_bean) {
+    $bean_type = self::get_bean_type( $bean );
+    $rel_type  = self::get_bean_type( $rel_bean );
+
     switch ( $code ) {
       case self::RB_HAS_ONE: // ONE-TO-ONE: http://redbeanphp.com/manual/association_api
-        $v1 = R::relatedOne( $bean, self::get_bean_type($rel_bean) );
-        $v2 = R::relatedOne( $rel_bean, self::get_bean_type($bean) );
+        $v1 = R::relatedOne( $bean, $rel_type );
+        $v2 = R::relatedOne( $rel_bean, $bean_type );
 
-        if ( $v1 or $v2 ) {
+        if ( $v1 || $v2 ) {
           throw new BeanBase_Exception_Relation( 'Relationship already exists in either or both beans',
             BeanBase_Exception_Relation::HAS_ONE );
         }
@@ -219,8 +235,6 @@ class RBB implements BeanBase_Const_Relation, BeanBase_Const_CRUD, BeanBase_Cons
 
         break;
       case self::RB_HAS_MANY: // ONE-TO-MANY: http://redbeanphp.com/manual/adding_lists
-        $bean_type = self::get_bean_type( $bean );
-
         if ( !$rel_bean->$bean_type ) {
           $rel_bean->$bean_type = $bean;
         } else {
@@ -239,14 +253,71 @@ class RBB implements BeanBase_Const_Relation, BeanBase_Const_CRUD, BeanBase_Cons
 
         break;
       case self::RB_BELONGS_TO: // MANY-TO-ONE: reversed ONE-TO-MANY
-        $rel_type = self::get_bean_type( $rel_bean );
-
         if ( !$bean->$rel_type ) {
           $bean->$rel_type = $rel_bean;
         } else {
           throw new BeanBase_Exception_Relation( 'Parent already exists',
             BeanBase_Exception_Relation::BELONGS_TO );
         }
+
+        break;
+      case self::RB_HAS_ONE_SELF: // self ONE-TO-ONE
+        if ( $bean_type != $rel_type ) {
+          throw new BeanBase_Exception_Relation( 'Self Referential operations require both beans have the same type',
+            BeanBase_Exception_Relation::RB_HAS_ONE_SELF );
+        }
+
+        // Very heavy checks
+        $v1 = R::findOne( $bean_type, ' '.self::RB_SELF_REF.'_id = ? ', array($bean->id) );
+        $v2 = $rel_bean->fetchAs($bean_type)->{self::RB_SELF_REF};
+        $v3 = R::findOne( $bean_type, ' '.self::RB_SELF_REF.'_id = ? ', array($rel_bean->id) );
+        $v4 = $bean->fetchAs($bean_type)->{self::RB_SELF_REF};
+
+        if ( $v1 || $v2 || $v3 || $v4 ) {
+          throw new BeanBase_Exception_Relation( 'Self reference already exist in either or both beans',
+            BeanBase_Exception_Relation::HAS_ONE_SELF );
+        }
+
+        $rel_bean->{self::RB_SELF_REF} = $bean;
+
+        break;
+      case self::RB_HAS_MANY_SELF: // self ONE-TO-MANY
+        if ( $bean_type != $rel_type ) {
+          throw new BeanBase_Exception_Relation( 'Self Referential operations require both beans have the same type',
+            BeanBase_Exception_Relation::HAS_MANY_SELF );
+        }
+
+        // See if parent already exist
+        if ( $rel_bean->fetchAs($bean_type)->{self::RB_SELF_REF} ) {
+          throw new BeanBase_Exception_Relation( 'Bean ID='.$rel_bean->id.' in Type='.$bean_type.' already has a self reference',
+            BeanBase_Exception_Relation::HAS_MANY_SELF );
+        }
+
+        $rel_bean->{self::RB_SELF_REF} = $bean;
+
+        break;
+      case self::RB_HAVE_MANY_SELF:
+        if ( $bean_type != $rel_type ) {
+          throw new BeanBase_Exception_Relation( 'Self Referential operations require both beans have the same type',
+            BeanBase_Exception_Relation::HAVE_MANY_SELF );
+        }
+
+        // TODO
+
+        break;
+      case self::RB_BELONGS_TO_SELF: // self MANY-TO-ONE
+        if ( $bean_type != $rel_type ) {
+          throw new BeanBase_Exception_Relation( 'Self Referential operations require both beans have the same type',
+            BeanBase_Exception_Relation::BELONGS_TO_SELF );
+        }
+
+        // See if parent already exist
+        if ( $bean->fetchAs($bean_type)->{self::RB_SELF_REF} ) {
+          throw new BeanBase_Exception_Relation( 'Bean ID='.$bean->id.' in Type='.$bean_type.' already has a self parent',
+            BeanBase_Exception_Relation::BELONGS_TO_SELF );
+        }
+
+        $bean->{self::RB_SELF_REF} = $rel_bean;
 
         break;
       default:
@@ -261,6 +332,75 @@ class RBB implements BeanBase_Const_Relation, BeanBase_Const_CRUD, BeanBase_Cons
     if ( self::is_modified($rel_bean) ) {
       R::store( $rel_bean );
     }
+  }
+
+  /**
+   * Get related bean(s) with given target bean object, relation code, with optional related type and sql array
+   *
+   * @todo   RB_HAVE_MANY_SELF implementation
+   *
+   * @param  RedBean_OODBBean $bean     The target bean
+   * @param  const            $code     The relation constant
+   * @param  string           $rel_type Required for simple relations, not used for self referential relations. Default: null
+   * @param  string           $query    Optional query used in RB_HAVE_MANY case. Default: null
+   * @return mixed                      Returns a bean or an array of beans on success; null or empty array otherwise
+   */
+  public static function get_related( RedBean_OODBBean $bean, $code, $rel_type=null, $query=null ) {
+    $bean_type = self::get_bean_type( $bean );
+
+    switch ( $code ) {
+      case self::RB_HAS_ONE: // could be null
+        if ( !empty($rel_type) ) {
+          return R::relatedOne( $bean, $rel_type );
+        }
+
+        return null;
+      case self::RB_HAS_MANY: // could be empty array
+        if ( !empty($rel_type) ) {
+          $own = "own".ucfirst( $rel_type );
+
+          return $bean->$own;
+        }
+
+        return array();
+      case self::RB_HAVE_MANY: // could be empty array
+        if ( !empty($rel_type) ) {
+          if ( !empty($query) ) {
+            return R::related( $bean, $rel_type, $query );
+          }
+
+          return R::related( $bean, $rel_type );
+        }
+
+        return array();
+      case self::RB_BELONGS_TO: // could be null
+        if ( !empty($rel_type) ) {
+          return $bean->$rel_type;
+        }
+
+        return null;
+      case self::RB_HAS_ONE_SELF: // could be null
+        return R::findOne( $bean_type, ' '.self::RB_SELF_REF.'_id = ? ', array($bean->id) );
+      case self::RB_HAS_MANY_SELF: // could be empty array
+        return R::find( $bean_type, ' '.self::RB_SELF_REF.'_id = ? ', array($bean->id) );
+      case self::RB_HAVE_MANY_SELF: // could be empty array
+        // TODO
+
+        return array();
+      case self::RB_BELONGS_TO_SELF: // could be null
+        return $bean->fetchAs($bean_type)->{self::RB_SELF_REF};
+      default:
+        return null;
+    }
+  }
+
+  public static function get_rel_code( RedBean_OODBBean $bean, RedBean_OODBBean $rel_bean ) {
+    // TODO
+
+  }
+
+  public static function break_relation( RedBean_OODBBean $bean, $code, RedBean_OODBBean $rel_bean ) {
+    // TODO
   }
 
   // TODO, method to access by relationship
@@ -319,6 +459,10 @@ class RBB implements BeanBase_Const_Relation, BeanBase_Const_CRUD, BeanBase_Cons
         throw new BeanBase_Exception( 'Data null or empty array', BeanBase_Exception::INCOMPLETE );
     }
 
+    if ( !self::is_assoc($data) ) {
+      throw new InvalidArgumentException( 'Data array must be associative' );
+    }
+
     foreach ( $keys as $key ) {
       if ( !isset($data[$key]) || !array_key_exists($key, $data) ) {
         throw new BeanBase_Exception( '$key missing', BeanBase_Exception::INCOMPLETE );
@@ -336,6 +480,10 @@ class RBB implements BeanBase_Const_Relation, BeanBase_Const_CRUD, BeanBase_Cons
    * @return array        Filtered kv-array
    */
   public static function strip_out( array $data, array $keys ) {
+    if ( !self::is_assoc($data) ) {
+      throw new InvalidArgumentException( 'Data array must be associative' );
+    }
+
     foreach ( $keys as $key ) {
       if ( isset($data[$key]) || array_key_exists($key, $data) ) {
         unset( $data[$key] );
@@ -355,10 +503,14 @@ class RBB implements BeanBase_Const_Relation, BeanBase_Const_CRUD, BeanBase_Cons
    * @return array         Filtered kv-array
    */
   public static function keep_only( array $data, array $keys ) {
+    if ( !self::is_assoc($data) ) {
+      throw new InvalidArgumentException( 'Data array must be associative' );
+    }
+
     $filtered = array();
 
     foreach ( $keys as $key ) {
-      if ( array_key_exists($key, $data) ) {
+      if ( isset($data[$key]) || array_key_exists($key, $data) ) {
         $filtered[$key] = $data[$key];
       }
     }
@@ -376,9 +528,13 @@ class RBB implements BeanBase_Const_Relation, BeanBase_Const_CRUD, BeanBase_Cons
    *
    * @return RedBean_OODBBean              The modified bean
    */
-  public static function insert_timestamp( RedBean_OODBBean $bean, $property, DateTime $timestamp, $time_format='Y-m-d H:i:s' ) {
+  public static function insert_timestamp( RedBean_OODBBean $bean, $property, DateTime $timestamp=null, $time_format='Y-m-d H:i:s' ) {
     if ( !is_string($property) ) {
       throw new InvalidArgumentException( 'Timestamp property must be a string' );
+    }
+
+    if ( null === $timestamp ) {
+      $timestamp = new DateTime( 'now' );
     }
 
     $bean->$property = $timestamp->format( $time_format );
@@ -488,5 +644,9 @@ class BeanBase_Exception_Relation extends BeanBase_Exception {
   const HAS_MANY   = "ONE-TO-MANY";
   const HAVE_MANY  = "MANY-TO-MANY";
   const BELONGS_TO = "BELONGS-TO";
+  const HAS_ONE_SELF    = "SELF-ONE-TO-ONE";
+  const HAS_MANY_SELF   = "SELF-ONE-TO-MANY";
+  const HAVE_MANY_SELF  = "SELF-MANY-TO-MANY";
+  const BELONGS_TO_SELF = "SELF-BELONGS-TO";
 
 }
